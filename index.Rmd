@@ -1,0 +1,371 @@
+---
+title: "Trabalho 1 - Transitórios Hidráulicos"
+author: "Tomás Antonio - 242114243"
+date: "2025-02-01"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+# PACOTES -----------------------------------------------------------------
+
+pacman::p_load(pacman, ggplot2, tidyverse, magick)
+
+# FUNÇÃO ------------------------------------------------------------------
+
+# Esta função faz os cálculos de transiente hidráulico em uma adutora assentada em z = 0 m
+# somente com duas condições de contorno: uma imediatamente à montante caracterizada por um reservatório
+# de nível fixo na posição x = 0 m; e uma válvula localizada no final do comprimento da adutora com fechamento
+# rápido com tc = 2l/a.
+
+fun.transiente <- function(na.reservatorio, # cota do nível d'água            (m)
+                           l.adutora,       # comprimento da adutora          (m)
+                           d.adutora,       # diâmetro da adutora             (m)
+                           f.atrito,        # fator de atrito (fórmula universal)
+                           celeridade,      # celeriadade da onda de pressão  (m/s)
+                           vel.permanente,  # velocidade em regime permanente (m/s)
+                           tempo.simulacao, # tempo de simulação              (s)
+                           passo.x          # discretização horizontal        (m)
+){
+  
+  
+  # Início contador de tempo
+  tempo.inicio <- Sys.time()
+  
+  # Pacotes
+  if (!require("pacman")) install.packages("pacman")
+  p_load(pacman, tidyverse, beepr)
+  
+  # Renomear parâmetros
+  h.r <- na.reservatorio
+  l <- l.adutora
+  d <- d.adutora
+  f <- f.atrito
+  a <- celeridade
+  v0 <- vel.permanente
+  t.s <- tempo.simulacao
+  dx <- passo.x
+  g <- 9.81
+  
+  # Discretização
+  n.dx <- l/dx   # número de passos na horizontal
+  dt <- dx/a     # discretização temporal
+  n.dt <- t.s/dt # número de passos no tempo
+  
+  # Inicialização das variáveis Vazão e Carga
+  q <- matrix(0, ncol = n.dx, nrow = n.dt) %>% data.frame # vazão (m³/s)
+  h <- matrix(0, ncol = n.dx, nrow = n.dt) %>% data.frame # carga de pressão (m)
+  
+  # Perda de carga unitária em cada passo dx
+  dh <- f*l/d*v0^2/(2*g)/n.dx
+  
+  # Constantes
+  area <- pi*(d/2)^2        # área (m²)
+  b <- a/(g*area)           # impedância característica
+  tc <- 2*l/a            # tempo de fechamento da válvula (s)
+  r <- f*dx/(2*g*d*area^2) # coeficiente de resistência
+  
+  # Regime permanente (t = 0) e condições de contorno
+  q[1,] <- v0*area     # primeira linha (t = 0) calculada a partir da vazão em regime permanente
+  h[,1] <- h.r      # primeira coluna (x = 0) é o nível d'água no reservatório
+  for(i in 2:n.dx){ # propagar a perda de carga ao longo da adutora
+    h[1,i] <- h[1,i-1] - dh
+  }
+  
+  # Regime transitório
+  for(t in 2:n.dt){
+    
+    # Contador
+    # cat(paste("\npasso de tempo atual:", (t-1)*dt, "segundos.\n"))
+    
+    # Fechamento da válvula
+    tempo <- (t-1)*dt
+    if(tempo <= 3){
+      tau <- (1 - tempo/tc)^3
+    }
+    if(tempo > 3){
+      tau <- 0
+    }
+    
+    cv <- (q[1,n.dx]*tau)^2/(2*h[1,n.dx])
+    
+    # Iterações ao longo da adutora
+    for(i in 1:n.dx){
+      
+      # Condições de montante (reservatório)
+      if(i == 1){
+        
+        cb <- h[t-1, i+1] - b*q[t-1, i+1]
+        bb <- b + r*abs(q[t-1, i+1])
+        
+        q[t,i] <- (h[t,i] - cb)/bb
+        
+      }
+      if(i > 1 & i < n.dx){
+        
+        ca <- h[t-1, i-1] + b*q[t-1, i-1]
+        ba <- b + r*abs(q[t-1, i-1])
+        cb <- h[t-1, i+1] - b*q[t-1, i+1]
+        bb <- b + r*abs(q[t-1, i+1])
+        
+        h[t,i] <- (bb*ca + ba*cb)/(ba + bb) # carga no ponto P em xi
+        q[t,i] <- (ca - cb)/(ba + bb)       # vazão no ponto P em xi
+        
+      }
+      if(i == n.dx){
+        
+        ca <- h[t-1, i-1] + b*q[t-1, i-1]
+        ba <- b + r*abs(q[t-1, i-1])
+        
+        # Vazão e carga na válvula
+        q[t,i] <- -ba*cv + sqrt((ba*cv)^2 + 2*cv*ca)
+        h[t,i] <- ca - ba*q[t,i]
+        
+      }
+      
+    }
+    
+  }
+  
+  # Adicionar coluna de 'tempo'
+  t <- seq(from = 0, to = t.simulacao, by = dt) %>% head(-1) # remove a última linha a mais criada
+  h <- cbind(t, h)
+  q <- cbind(t, q)
+  
+  resultados <- list(Carga = h, Vazao = q)
+  
+  # Alerta sonoro
+  beepr::beep(sound = 10)
+  tempo.decorrido <- difftime(Sys.time(), tempo.inicio, units = "secs")
+  cat("\nSimulação de", t.s, "segundos concluída em:", tempo.decorrido,"segundos\n")
+  
+  return(resultados)
+  
+}
+
+
+# DADOS DE ENTRADA --------------------------------------------------------
+
+na.reservatorio <- 100 # [m] nível d'água do reservatório de nível fixo
+l.adutora <- 1500      # [m] extensão da adutora
+d.adutora <- 1         # [m] diâmetro interno da adutora
+f.atrito <- 0.02       # fator de atrito para condições de escoamento permanente e transitório
+na.adutora <- 0        # [m] cota horizontal da adutora
+v0 <- 1                # [m/s] velocidade de escoamento em regime permanente
+a <- 1000              # [m/s] celeridade da onda de pressão
+g <- 9.81              # [m/s²] aceleração da gravidade
+t.simulacao <- 60      # [s] tempo de simulação
+
+
+# DISCRETIZAÇÃO ---------------------------------------------------------------
+
+# Espacial [m]
+dx <- 10
+
+
+# SIMULAÇÃO ---------------------------------------------------------------
+
+# Rodar função p/ simular transiente
+resultado <- fun.transiente(na.reservatorio = 100,
+                            l.adutora = 1500,
+                            d.adutora = 1,
+                            f.atrito = 0.02,
+                            celeridade = 1000,
+                            vel.permanente = 1,
+                            tempo.simulacao = 60,
+                            passo.x = 10)
+
+
+# VISUALIZAÇÃO DOS RESULTADOS ---------------------------------------------
+
+# Plotar a válvula (coluna 'X150') durante os primeiros 60 segundos de simulação
+plot.h.valvula <- ({
+  ggplot() +
+    geom_line(data = resultado$Carga, aes(x = t, y = X150), color = "steelblue", linewidth = 0.4) +
+    geom_hline(yintercept = resultado$Carga[1,151],
+               color = "red", linetype = "dashed", linewidth = 0.4) +
+    labs(x = "Tempo (s)", y = "Carga de Pressão (m)") +
+    theme_minimal() +
+    theme(panel.backgroundd = NULL,
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.border = element_rect(fill = NA),
+          text = element_text(size = 10))
+})
+
+ggsave(filename = "Plotagens/Grafico A_Carga de Pressão na Válvula.png",
+       plot = plot.h.valvula,
+       height = 10, width = 16, units = "cm", dpi = 100)
+
+plot.h.valvula
+
+plot.q.valvula <- ({
+  ggplot() +
+    geom_line(data = resultado$Vazao, aes(x = t, y = X150), color = "steelblue", linewidth = 0.4) +
+    geom_hline(yintercept = resultado$Vazao[1,151],
+               color = "red", linetype = "dashed", linewidth = 0.4) +
+    labs(x = "Tempo (s)", y = "Vazão (m³/s)") +
+    theme_minimal() +
+    theme(panel.backgroundd = NULL,
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.border = element_rect(fill = NA),
+          text = element_text(size = 10))
+})
+
+ggsave(filename = "Plotagens/Grafico A_Vazão na Válvula.png",
+       plot = plot.q.valvula,
+       height = 10, width = 16, units = "cm", dpi = 100)
+
+plot.q.valvula
+
+# Plotar Carga de Pressão e Vazão em X = 750 m
+plot.h.750 <- ({
+  ggplot() +
+    geom_line(data = resultado$Carga, aes(x = t, y = X75), color = "steelblue", linewidth = 0.4) +
+    geom_hline(yintercept = resultado$Carga[1,76],
+               color = "red", linetype = "dashed", linewidth = 0.4) +
+    labs(x = "Tempo (s)", y = "Carga de Pressão (m)") +
+    theme_minimal() +
+    theme(panel.backgroundd = NULL,
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.border = element_rect(fill = NA),
+          text = element_text(size = 10))
+})
+
+ggsave(filename = "Plotagens/Grafico A_Carga de Pressão na Válvula.png",
+       plot = plot.h.750,
+       height = 10, width = 16, units = "cm", dpi = 100)
+
+plot.h.750
+
+plot.q.750 <- ({
+  ggplot() +
+    geom_line(data = resultado$Vazao, aes(x = t, y = X75), color = "steelblue", linewidth = 0.4) +
+    geom_hline(yintercept = resultado$Vazao[1,76],
+               color = "red", linetype = "dashed", linewidth = 0.4) +
+    labs(x = "Tempo (s)", y = "Vazão (m³/s)") +
+    theme_minimal() +
+    theme(panel.backgroundd = NULL,
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.border = element_rect(fill = NA),
+          text = element_text(size = 10))
+})
+
+ggsave(filename = "Plotagens/Grafico A_Carga de Pressão na Válvula.png",
+       plot = plot.q.750,
+       height = 10, width = 16, units = "cm", dpi = 100)
+
+plot.q.750
+
+
+# VISUALIZAÇÃO ANIMADA ----------------------------------------------------
+
+# Transformar dado wide em long
+h.long <- ({
+  resultado$Carga %>% 
+  pivot_longer(cols = -t,
+               names_to = "comprimento",
+               values_to = "carga") %>% 
+    mutate(comprimento = as.numeric(gsub("X", "", comprimento))*dx) %>% 
+    rename("tempo" = "t")
+})
+q.long <- ({
+  resultado$Vazao %>% 
+    pivot_longer(cols = -t,
+                 names_to = "comprimento",
+                 values_to = "vazao") %>% 
+    mutate(comprimento = as.numeric(gsub("X", "", comprimento))*dx) %>% 
+    rename("tempo" = "t")
+})
+
+# Definir diretório temporário
+dir.out.h <- file.path(tempdir(), "plot.carga")
+dir.create(dir.out.h, recursive = TRUE)
+
+h.min <- min(h.long$carga)
+h.max <- max(h.long$carga)
+
+# Loop p/ gerar frames
+for(i in seq(from = 0, max(h.long$tempo), 0.1)){
+  
+  p <- h.long %>%
+    # filter(tempo == i) %>% # remover o filtro de tempo
+    filter(abs(tempo - i) < 1e-6) %>% 
+    ggplot(aes(x = comprimento, y = carga)) +
+    geom_line() +
+    geom_hline(yintercept = 100, color = "red", alpha = 0.75,
+               linewidth = 0.3, linetype = "dashed") +
+    scale_y_continuous(limits = c(h.min, h.max)) +
+    labs(x = "Comprimento da Adutora [m]", y = "Carga de Pressão [m]",
+         title = paste("Tempo:", i, "segundos")) +
+    theme_minimal() +
+    theme(panel.background = NULL,
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.border = element_rect(fill = NA),
+          text = element_text(size = 10))
+    
+  fp <- file.path(dir.out.h, paste0("h_t_", i*10,".jpg"))
+  
+  ggsave(plot = p,
+         filename = fp,
+         height = 12, width = 16, units = 'cm',
+         dpi = 75)
+  
+}
+
+# Criar e baixar GIF
+imgs.h <- list.files(dir.out.h, full.names = TRUE)
+imgs.h <- imgs.h[order(as.numeric(gsub("[^0-9]", "", basename(imgs.h))))] # extrair frames na ordem
+imgs.list.h <- lapply(imgs.h, image_read)                                 # importar frames de volta p/ R
+img.join.h <- image_join(imgs.list.h)                                     # unir frames
+img.animate.h <- image_animate(img.join.h, fps = 10)                      # gerar animação
+image_write(image = img.animate.h,                                        # criar arquivo GIF
+            path = "carga.gif")
+
+img.animate.h
+
+# Definir diretório temporário
+dir.out.q <- file.path(tempdir(), "plot.vazao")
+dir.create(dir.out.q, recursive = TRUE)
+
+q.min <- min(q.long$vazao)
+q.max <- max(q.long$vazao)
+
+# Loop p/ gerar frames
+for(i in seq(from = 0, max(q.long$tempo), 0.1)){
+  
+  p <- q.long %>%
+    # filter(tempo == i) %>% # remover o filtro de tempo
+    filter(abs(tempo - i) < 1e-6) %>% 
+    ggplot(aes(x = comprimento, y = vazao)) +
+    geom_line() +
+    geom_hline(yintercept = q.long$vazao[1], color = "red", alpha = 0.75,
+               linewidth = 0.3, linetype = "dashed") +
+    scale_y_continuous(limits = c(q.min, q.max)) +
+    labs(x = "Comprimento da Adutora [m]", y = "Vazão [m³/s]",
+         title = paste("Tempo:", i, "segundos")) +
+    theme_minimal() +
+    theme(panel.background = NULL,
+          plot.background = element_rect(color = "white", fill = "white"),
+          panel.border = element_rect(fill = NA),
+          text = element_text(size = 10))
+  
+  fp <- file.path(dir.out.q, paste0("q_t_", i*10,".jpg"))
+  
+  ggsave(plot = p,
+         filename = fp,
+         height = 12, width = 16, units = 'cm',
+         dpi = 75)
+  
+}
+
+# Criar e baixar GIF
+imgs.q <- list.files(dir.out.q, full.names = TRUE)
+imgs.q <- imgs.q[order(as.numeric(gsub("[^0-9]", "", basename(imgs.q))))] # extrair frames na ordem
+imgs.list.q <- lapply(imgs.q, image_read)                                 # importar frames de volta p/ R
+img.join.q <- image_join(imgs.list.q)                                     # unir frames
+img.animate.q <- image_animate(img.join.q, fps = 10)                      # gerar animação
+image_write(image = img.animate.q,                                        # criar arquivo GIF
+            path = "vazao.gif")
+
+img.animate.q
+```
+
