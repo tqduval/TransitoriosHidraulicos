@@ -2,3 +2,5 @@ Relatório RMarkdown com código em R para simulação de transitórios hidrául
 Solução utilizando o Método das Características para um problema simples com duas condições de contorno:
 * um reservatório de nível d'água fixo na cota 100 m; e
 * uma válvula fechando rapidamente.
+
+O código pode ser encontrado em <https://tqduval.github.io/TransitoriosHidraulicos/>
